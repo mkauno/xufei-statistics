@@ -3,10 +3,11 @@ import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 import os
+import math
 
-xlsx_path = r'E:/工作稿/2026.5/小学续费统计_5.15.xlsx'
-xgao_path = r'E:/工作稿/2026.5/20260515小高综合2026Q2续2026Q3续班率.xls'
-orig_path = r'E:/工作稿/2026.5/26年小学单科Q2数据-5.15.xlsx'
+xlsx_path = r'E:/工作稿/2026.5/小学续费统计_5.27.xlsx'
+xgao_path = r'E:/工作稿/2026.5/20260527小高综合2026Q2续2026Q3续班率(1).xls'
+orig_path = r'E:/工作稿/2026.5/26年小学单科Q2数据-5.27.xlsx'
 
 has_xgao = os.path.exists(xgao_path)
 
@@ -16,6 +17,9 @@ yw = orig['语文'].copy(); sx = orig['数学'].copy(); yy = orig['英语'].copy()
 for df in [yw, sx, yy]:
     df['基数'] = pd.to_numeric(df['基数'], errors='coerce').fillna(0)
     df['是否续费3季度'] = pd.to_numeric(df['是否续费3季度'], errors='coerce').fillna(0)
+    # 修复列名（数学偶尔校区列为空格）
+    if '上课校区' not in df.columns:
+        df.rename(columns={df.columns[0]: '上课校区'}, inplace=True)
 
 # 语文排除拼音（总体合计专用）
 yw_main = yw[yw['课程年级'] != '拼音'].copy()
@@ -24,8 +28,11 @@ yw_main = yw[yw['课程年级'] != '拼音'].copy()
 xgao_e = xgao_m = None
 if has_xgao:
     xgao = pd.read_excel(xgao_path, sheet_name='续班数据表', engine='openpyxl')
-    xgao['5.14续班'] = pd.to_numeric(xgao['5.14续班'], errors='coerce').fillna(0)
+    xgao['5.27续班'] = pd.to_numeric(xgao['5.27续班'], errors='coerce').fillna(0)
     xgao['基数'] = pd.to_numeric(xgao['基数'], errors='coerce').fillna(0)
+    # 校区名去掉"教"字后面内容
+    xgao['上课校区'] = xgao['上课校区'].astype(str).str.split('教').str[0].str.strip()
+    xgao.loc[xgao['上课校区'] == '上海路', '上课校区'] = '上海路综合'
     xgao_e = xgao[xgao['学科'] == '素养E'].copy()
     xgao_m = xgao[xgao['学科'] == '素养M'].copy()
 
@@ -50,11 +57,11 @@ yy_tea_total_b = yy_tea_total_x = yy_b
 
 if has_xgao:
     zh_b = int(xgao_e['基数'].sum()) + int(xgao_m['基数'].sum())
-    zh_x = xgao_e['5.14续班'].sum() + xgao_m['5.14续班'].sum()
+    zh_x = xgao_e['5.27续班'].sum() + xgao_m['5.27续班'].sum()
     sx_tea_total_b = sx_b + int(xgao_m['基数'].sum())
-    sx_tea_total_x = sx_x + xgao_m['5.14续班'].sum()
+    sx_tea_total_x = sx_x + xgao_m['5.27续班'].sum()
     yy_tea_total_b = yy_b + int(xgao_e['基数'].sum())
-    yy_tea_total_x = yy_x + xgao_e['5.14续班'].sum()
+    yy_tea_total_x = yy_x + xgao_e['5.27续班'].sum()
 
 # ── 辅助 ───────────────────────────────────────────────────────────
 def is_int(v):
@@ -184,6 +191,77 @@ ws1.column_dimensions['D'].width = 12
 ws1.freeze_panes = 'A3'
 
 # ═══════════════════════════════════════════════════════════════════
+# 幼小拼音续班率奖金表
+# ═══════════════════════════════════════════════════════════════════
+r = ws1.max_row + 3
+
+# 收集英语-幼小和数学-幼小教师（目标80%）
+bonus_teachers = []
+for grp_name, grp_df in [('数学-幼小', sx_yx), ('英语-幼小', yy_yx)]:
+    tea = grp_df.groupby('任课老师', as_index=False).agg(基数=('基数', 'sum'), 续费=('是否续费3季度', 'sum'))
+    for _, t in tea.iterrows():
+        base = int(t['基数']); xf = t['续费']
+        lv = xf / base if base > 0 else 0
+        if lv < 0.8: continue
+        dacheng = math.ceil(base * 0.8)
+        chaochu = int(xf - dacheng)
+        bonus = dacheng * 200 + chaochu * 500
+        subj = grp_name.replace('-','')[:3]
+        bonus_teachers.append((t['任课老师'], subj, bonus, lv, base, xf, dacheng, chaochu))
+
+bonus_teachers.sort(key=lambda x: x[2], reverse=True)
+
+# 奖金表标题
+ws1.merge_cells(f'A{r}:C{r}')
+c = ws1.cell(row=r, column=1, value='幼小拼音 续班率奖金表（目标≥80%）')
+c.font = Font(bold=True, color='FFFFFF', size=12, name='Arial')
+c.fill = PatternFill('solid', fgColor='C55A11')
+c.alignment = Alignment(horizontal='center', vertical='center')
+ws1.row_dimensions[r].height = 24
+r += 1
+
+for ci, h in enumerate(['姓名', '学科', '奖金金额'], 1):
+    hdr(ws1, r, ci, h, bg='843C0C')
+ws1.row_dimensions[r].height = 20
+r += 1
+
+total_bonus = 0
+for idx, (name, subj, bonus, lv, base, xf, _dc, _cc) in enumerate(bonus_teachers):
+    bg_c = 'FCE4D6' if idx % 2 == 0 else 'FFFFFF'
+    dc(ws1, r, 1, name, align='left', bg=bg_c)
+    dc(ws1, r, 2, subj, align='center', bg=bg_c)
+    dc(ws1, r, 3, bonus, align='center', bg=bg_c)
+    ws1.row_dimensions[r].height = 18
+    total_bonus += bonus
+    r += 1
+
+dc(ws1, r, 1, '合计', bold=True, align='center', bg='F4B183')
+dc(ws1, r, 2, f'{len(bonus_teachers)}人', bold=True, align='center', bg='F4B183')
+dc(ws1, r, 3, total_bonus, bold=True, align='center', bg='F4B183')
+ws1.row_dimensions[r].height = 20
+r += 2
+
+# 续班完成率统计
+ws1.merge_cells(f'A{r}:C{r}')
+c = ws1.cell(row=r, column=1, value='幼小拼音 续班完成率教师统计')
+c.font = Font(bold=True, color='FFFFFF', size=12, name='Arial')
+c.fill = PatternFill('solid', fgColor='2E75B6')
+c.alignment = Alignment(horizontal='center', vertical='center')
+ws1.row_dimensions[r].height = 24
+r += 1
+
+for threshold, label in [(1.0, '已完成100%教师'), (0.9, '已完成90%教师'), (0.8, '已完成80%教师')]:
+    names = [t[0] for t in bonus_teachers if (t[3] >= threshold and t[3] < threshold + 0.1) or (threshold == 1.0 and t[3] >= 1.0)]
+    bg = 'E2EFDA' if threshold >= 1.0 else ('DAEEF3' if threshold >= 0.9 else 'FFF2CC')
+    dc(ws1, r, 1, label, bold=True, align='left', bg=bg)
+    dc(ws1, r, 2, '、'.join(names) if names else '无', align='left', bg=bg)
+    ws1.merge_cells(f'B{r}:C{r}')
+    ws1.row_dimensions[r].height = 20
+    r += 1
+
+ws1.column_dimensions['C'].width = 14
+
+# ═══════════════════════════════════════════════════════════════════
 # Sheet 2: 总体合计汇总
 # ═══════════════════════════════════════════════════════════════════
 ws2 = wb.create_sheet('总体合计汇总')
@@ -229,8 +307,8 @@ qy_parts = [yw_qy, sx_qy, yy_qy]
 
 if has_xgao:
     zh_qy = pd.concat([
-        xgao_e.groupby('上课校区', as_index=False).agg(基数=('基数', 'sum'), 续费=('5.14续班', 'sum')),
-        xgao_m.groupby('上课校区', as_index=False).agg(基数=('基数', 'sum'), 续费=('5.14续班', 'sum'))
+        xgao_e.groupby('上课校区', as_index=False).agg(基数=('基数', 'sum'), 续费=('5.27续班', 'sum')),
+        xgao_m.groupby('上课校区', as_index=False).agg(基数=('基数', 'sum'), 续费=('5.27续班', 'sum'))
     ]).groupby('上课校区', as_index=False).agg(基数=('基数', 'sum'), 续费=('续费', 'sum'))
     qy_parts.append(zh_qy)
 
@@ -247,14 +325,14 @@ yw_tea = yw_tea.sort_values('续费率', ascending=False).reset_index(drop=True)
 
 sx_tea = sx.groupby('任课老师', as_index=False).agg(基数=('基数', 'sum'), 续费=('是否续费3季度', 'sum'))
 if has_xgao:
-    sx_tea = pd.concat([sx_tea, xgao_m.groupby('任课老师', as_index=False).agg(基数=('基数', 'sum'), 续费=('5.14续班', 'sum'))])
+    sx_tea = pd.concat([sx_tea, xgao_m.groupby('任课老师', as_index=False).agg(基数=('基数', 'sum'), 续费=('5.27续班', 'sum'))])
 sx_tea = sx_tea.groupby('任课老师', as_index=False).agg(基数=('基数', 'sum'), 续费=('续费', 'sum'))
 sx_tea['续费率'] = sx_tea['续费'] / sx_tea['基数']
 sx_tea = sx_tea.sort_values('续费率', ascending=False).reset_index(drop=True)
 
 yy_tea = yy.groupby('任课老师', as_index=False).agg(基数=('基数', 'sum'), 续费=('是否续费3季度', 'sum'))
 if has_xgao:
-    yy_tea = pd.concat([yy_tea, xgao_e.groupby('任课老师', as_index=False).agg(基数=('基数', 'sum'), 续费=('5.14续班', 'sum'))])
+    yy_tea = pd.concat([yy_tea, xgao_e.groupby('任课老师', as_index=False).agg(基数=('基数', 'sum'), 续费=('5.27续班', 'sum'))])
 yy_tea = yy_tea.groupby('任课老师', as_index=False).agg(基数=('基数', 'sum'), 续费=('续费', 'sum'))
 yy_tea['续费率'] = yy_tea['续费'] / yy_tea['基数']
 yy_tea = yy_tea.sort_values('续费率', ascending=False).reset_index(drop=True)
@@ -278,6 +356,11 @@ print(f'语文教师: {len(yw_tea)}人')
 sx_label = '数学教师(含素养M)' if has_xgao else '数学教师'
 yy_label = '英语教师(含素养E)' if has_xgao else '英语教师'
 print(f'{sx_label}: {len(sx_tea)}人 | {yy_label}: {len(yy_tea)}人')
+print(f'')
+print(f'=== 幼小拼音奖金 ===')
+for name, subj, bonus, lv, *_ in bonus_teachers:
+    print(f'{name}: {bonus}元')
+print(f'合计: {len(bonus_teachers)}人 / {total_bonus}元')
 
 # ── 写总体合计汇总 ───────────────────────────────────────────────
 r = total_row + 2
